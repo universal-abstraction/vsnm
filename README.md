@@ -22,7 +22,7 @@ A minimal, keyboard-driven note management system for dmenu-like launchers (wofi
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/vsnm.git
+git clone https://github.com/universal-abstraction/vsnm.git
 cd vsnm
 make install
 ```
