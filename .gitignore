@@ -1,0 +1,17 @@
+# Editor
+*.swp
+*.swo
+*~
+.nvim
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# Local testing
+test-notes/

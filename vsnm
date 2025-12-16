@@ -1,0 +1,541 @@
+#!/bin/bash
+#
+# vsnm - A minimal, keyboard-driven note management system
+# https://github.com/YOUR_USERNAME/vsnm
+#
+# Usage: vsnm [options]
+#
+# Options:
+#   --help    Show this help message
+#   --config  Print config file location
+#
+
+set -euo pipefail
+
+# ============================================================================
+# SECTION 1: XDG PATHS & DIRECTORIES
+# ============================================================================
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/vsnm"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/vsnm"
+CONFIG_FILE="$CONFIG_DIR/config"
+TEMPLATES_DIR="$CONFIG_DIR/templates"
+
+# ============================================================================
+# SECTION 2: DEFAULT CONFIGURATION
+# ============================================================================
+
+# Default values (can be overridden in config file)
+: "${NOTES_DIR:=$HOME/notes}"
+: "${EDITOR:=nvim}"
+: "${TERMINAL:=kitty}"
+: "${DATE_FORMAT:=%d-%m-%Y}"
+: "${MENU_LAUNCHER:=wofi}"
+: "${RECENT_NOTES_COUNT:=10}"
+: "${NOTE_TEMPLATE:=default}"
+
+# ============================================================================
+# SECTION 3: INITIALIZATION & CONFIG LOADING
+# ============================================================================
+
+# Initialize configuration directory structure
+init_config() {
+    # Create directories if they don't exist
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$TEMPLATES_DIR"
+    mkdir -p "$DATA_DIR"
+
+    # Create default config if it doesn't exist
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        cat > "$CONFIG_FILE" << 'EOF'
+# vsnm configuration
+# Override any of these values as needed
+
+# Notes directory
+NOTES_DIR="$HOME/notes"
+
+# Editor to use for editing notes
+EDITOR="nvim"
+
+# Terminal emulator
+TERMINAL="kitty"
+
+# Date format for note filenames (see 'man date')
+# Examples: %Y-%m-%d (2024-12-15), %d-%m-%Y (15-12-2024)
+DATE_FORMAT="%d-%m-%Y"
+
+# Menu launcher: wofi, rofi, dmenu, or fzf
+MENU_LAUNCHER="wofi"
+
+# Number of recent notes to show in menu
+RECENT_NOTES_COUNT="10"
+
+# Default template name (from ~/.config/vsnm/templates/)
+NOTE_TEMPLATE="default"
+
+# === Advanced Configuration ===
+
+# Custom rewind mode: simple, smart, custom
+# REWIND_MODE="simple"
+
+# Custom hooks (uncomment to enable)
+# rewind_hook() {
+#     # Custom logic for rewinding notes
+#     # $1 = source file, $2 = destination file
+#     cat "$1" | sed 's/\[ \]/[ ]/g' > "$2"
+# }
+EOF
+    fi
+
+    # Create default template if it doesn't exist
+    if [[ ! -f "$TEMPLATES_DIR/default.md" ]]; then
+        cat > "$TEMPLATES_DIR/default.md" << 'EOF'
+# Notes for {{DATE}}
+
+## Tasks
+-
+
+## Notes
+
+
+## Reflections
+
+EOF
+    fi
+}
+
+# Load user configuration
+load_config() {
+    [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+}
+
+# ============================================================================
+# SECTION 4: CORE FUNCTIONS
+# ============================================================================
+
+# --- Date helpers ---
+
+get_today() {
+    date +"$DATE_FORMAT"
+}
+
+get_tomorrow() {
+    date -d tomorrow +"$DATE_FORMAT"
+}
+
+get_yesterday() {
+    date -d yesterday +"$DATE_FORMAT"
+}
+
+# --- Path helpers ---
+
+get_note_path() {
+    local date="$1"
+    echo "$NOTES_DIR/$date.md"
+}
+
+note_exists() {
+    local date="$1"
+    [[ -f "$(get_note_path "$date")" ]]
+}
+
+# --- Note listing ---
+
+get_recent_notes() {
+    local today tomorrow
+    today=$(get_today)
+    tomorrow=$(get_tomorrow)
+
+    # List all markdown files, extract dates, sort, filter, limit
+    find "$NOTES_DIR" -maxdepth 1 -name "*.md" -type f 2>/dev/null | \
+        sed 's|.*/||; s|\.md$||' | \
+        grep -E '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' | \
+        sort -t- -k3 -k2 -k1 -r | \
+        grep -v "^$today$\|^$tomorrow$" | \
+        head -n "$RECENT_NOTES_COUNT"
+}
+
+get_last_note() {
+    local today
+    today=$(get_today)
+
+    find "$NOTES_DIR" -maxdepth 1 -name "*.md" -type f 2>/dev/null | \
+        sed 's|.*/||; s|\.md$||' | \
+        grep -E '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' | \
+        grep -v "^$today$" | \
+        sort -t- -k3 -k2 -k1 -r | \
+        head -n 1
+}
+
+# --- Template system ---
+
+apply_template() {
+    local date="$1"
+    local output_file="$2"
+    local template_file="$TEMPLATES_DIR/${NOTE_TEMPLATE}.md"
+
+    # Use custom template if exists, otherwise use built-in default
+    if [[ -f "$template_file" ]]; then
+        sed "s/{{DATE}}/$date/g" "$template_file" > "$output_file"
+    else
+        # Built-in fallback template
+        cat > "$output_file" << EOF
+# Notes for $date
+
+## Tasks
+-
+
+## Notes
+
+
+## Reflections
+
+EOF
+    fi
+}
+
+# --- Note operations ---
+
+create_note() {
+    local date="$1"
+    local note_path
+    note_path=$(get_note_path "$date")
+
+    # Don't overwrite existing notes
+    if [[ -f "$note_path" ]]; then
+        return 0
+    fi
+
+    apply_template "$date" "$note_path"
+}
+
+rewind_note() {
+    local today last_note
+    today=$(get_today)
+    local today_path
+    today_path=$(get_note_path "$today")
+
+    # Check if today's note already exists
+    if [[ -f "$today_path" ]]; then
+        notify "Today's note already exists"
+        echo "$today_path"
+        return 0
+    fi
+
+    # Find the last note
+    last_note=$(get_last_note)
+
+    if [[ -z "$last_note" ]]; then
+        notify "No previous notes found"
+        # Create a new note instead
+        create_note "$today"
+        echo "$today_path"
+        return 0
+    fi
+
+    local last_note_path
+    last_note_path=$(get_note_path "$last_note")
+
+    # Check if custom rewind hook is defined
+    if declare -f rewind_hook &>/dev/null; then
+        rewind_hook "$last_note_path" "$today_path"
+    else
+        # Default rewind: copy and update date in header
+        sed "s/# Notes for $last_note/# Notes for $today/" "$last_note_path" > "$today_path"
+    fi
+
+    echo "$today_path"
+}
+
+open_note() {
+    local note_path="$1"
+
+    # Ensure notes directory exists
+    mkdir -p "$NOTES_DIR"
+
+    # Open in terminal with editor
+    $TERMINAL $EDITOR "$note_path" &
+}
+
+browse_notes() {
+    mkdir -p "$NOTES_DIR"
+    $TERMINAL sh -c "cd '$NOTES_DIR' && ls -1t *.md 2>/dev/null | sed 's|\.md$||' && exec \$SHELL" &
+}
+
+# --- Filename helpers ---
+
+# Normalize filename: lowercase, spaces to dashes, remove special chars
+normalize_filename() {
+    local input="$1"
+    # Convert to lowercase, replace spaces with dashes, remove special chars except alphanumeric and dash
+    echo "$input" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9\-]//g' | sed 's/--*/-/g' | sed 's/^-//; s/-$//'
+}
+
+# --- Custom note operations ---
+
+# Create custom note with user-provided name
+create_custom_note() {
+    local note_name
+    note_name=$(prompt_input "Note name")
+
+    # Exit if user cancelled
+    [[ -z "$note_name" ]] && return 1
+
+    # Normalize the name
+    local normalized
+    normalized=$(normalize_filename "$note_name")
+
+    # Exit if name is empty after normalization
+    [[ -z "$normalized" ]] && notify "Invalid note name" && return 1
+
+    # Create filename: date_name.md
+    local today
+    today=$(get_today)
+    local filename="${today}_${normalized}.md"
+    local note_path="$NOTES_DIR/$filename"
+
+    # Check if already exists
+    if [[ -f "$note_path" ]]; then
+        notify "Note already exists: $filename"
+        open_note "$note_path"
+        return 0
+    fi
+
+    # Create note with template
+    apply_template "$today" "$note_path"
+
+    # Replace title to include custom name
+    sed -i "s/# Notes for $today/# $note_name/" "$note_path"
+
+    open_note "$note_path"
+}
+
+# --- Notifications ---
+
+notify() {
+    local message="$1"
+    if command -v notify-send &>/dev/null; then
+        notify-send "vsnm" "$message"
+    else
+        echo "[vsnm] $message" >&2
+    fi
+}
+
+# ============================================================================
+# SECTION 5: MENU & UI
+# ============================================================================
+
+# Menu icons
+ICON_TODAY="📝"
+ICON_TOMORROW="📅"
+ICON_REWIND="🔄"
+ICON_NEW="✨"
+ICON_NOTE="📄"
+ICON_BROWSE="📂"
+
+build_menu() {
+    local today tomorrow
+    today=$(get_today)
+    tomorrow=$(get_tomorrow)
+
+    # Fixed order: Today, Tomorrow, Rewind, New Note
+    echo "$ICON_TODAY Today ($today)"
+    echo "$ICON_TOMORROW Tomorrow ($tomorrow)"
+    echo "$ICON_REWIND Rewind"
+    echo "$ICON_NEW New Note"
+
+    # Recent notes
+    local recent
+    recent=$(get_recent_notes)
+    if [[ -n "$recent" ]]; then
+        while IFS= read -r note; do
+            echo "$ICON_NOTE $note"
+        done <<< "$recent"
+    fi
+
+    # Browse option at the end
+    echo "$ICON_BROWSE Browse Notes"
+}
+
+show_menu() {
+    case "$MENU_LAUNCHER" in
+        wofi)
+            wofi --dmenu --prompt "Notes" --cache-file=/dev/null
+            ;;
+        rofi)
+            rofi -dmenu -p "Notes"
+            ;;
+        dmenu)
+            dmenu -p "Notes"
+            ;;
+        fzf)
+            fzf --prompt="Notes> " --height=40%
+            ;;
+        *)
+            echo "Unknown menu launcher: $MENU_LAUNCHER" >&2
+            echo "Supported: wofi, rofi, dmenu, fzf" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Prompt user for text input
+prompt_input() {
+    local prompt_text="$1"
+
+    case "$MENU_LAUNCHER" in
+        wofi)
+            # Show placeholder hint for better UX
+            echo "[Type and press Enter]" | wofi --dmenu \
+                --prompt "$prompt_text" \
+                --cache-file=/dev/null \
+                --lines 1 \
+                --allow-markup \
+                --insensitive
+            ;;
+        rofi)
+            echo "" | rofi -dmenu -p "$prompt_text" -lines 0
+            ;;
+        dmenu)
+            echo "" | dmenu -p "$prompt_text"
+            ;;
+        fzf)
+            # fzf requires special approach for input
+            read -p "$prompt_text: " input
+            echo "$input"
+            ;;
+        *)
+            read -p "$prompt_text: " input
+            echo "$input"
+            ;;
+    esac
+}
+
+handle_selection() {
+    local selection="$1"
+    local note_path
+
+    case "$selection" in
+        *"Today"*)
+            local today
+            today=$(get_today)
+            note_path=$(get_note_path "$today")
+            create_note "$today"
+            open_note "$note_path"
+            ;;
+
+        *"Tomorrow"*)
+            local tomorrow
+            tomorrow=$(get_tomorrow)
+            note_path=$(get_note_path "$tomorrow")
+            create_note "$tomorrow"
+            open_note "$note_path"
+            ;;
+
+        *"Rewind"*)
+            note_path=$(rewind_note)
+            open_note "$note_path"
+            ;;
+
+        *"New Note"*)
+            create_custom_note
+            ;;
+
+        *"Browse Notes"*)
+            browse_notes
+            ;;
+
+        *)
+            # Extract date from "📄 DD-MM-YYYY"
+            local note_date
+            note_date=$(echo "$selection" | sed "s/^$ICON_NOTE //" | tr -d ' ')
+            note_path=$(get_note_path "$note_date")
+
+            if [[ -f "$note_path" ]]; then
+                open_note "$note_path"
+            else
+                notify "Note not found: $note_date"
+                exit 1
+            fi
+            ;;
+    esac
+}
+
+# ============================================================================
+# SECTION 6: COMMAND LINE INTERFACE
+# ============================================================================
+
+show_help() {
+    cat << 'EOF'
+vsnm - A minimal, keyboard-driven note management system
+
+USAGE:
+    vsnm [OPTIONS]
+
+OPTIONS:
+    --help      Show this help message
+    --config    Print config file location and exit
+    --version   Show version information
+
+CONFIGURATION:
+    Config file: ~/.config/vsnm/config
+    Templates:   ~/.config/vsnm/templates/
+
+    The config file will be created automatically on first run.
+
+KEYBINDING EXAMPLES:
+    Hyprland:  bind = SUPER, N, exec, vsnm
+    Sway:      bindsym $mod+n exec vsnm
+    i3:        bindsym $mod+n exec --no-startup-id vsnm
+
+MORE INFO:
+    https://github.com/YOUR_USERNAME/vsnm
+EOF
+}
+
+# ============================================================================
+# SECTION 7: MAIN ENTRY POINT
+# ============================================================================
+
+main() {
+    # Parse command line arguments
+    case "${1:-}" in
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        --config)
+            echo "$CONFIG_FILE"
+            exit 0
+            ;;
+        --version|-v)
+            echo "vsnm 0.1.0"
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+    esac
+
+    # Initialize config directory and load configuration
+    init_config
+    load_config
+
+    # Ensure notes directory exists
+    mkdir -p "$NOTES_DIR"
+
+    # Build and show menu
+    local selection
+    selection=$(build_menu | show_menu)
+
+    # Exit if nothing selected
+    [[ -z "$selection" ]] && exit 0
+
+    # Handle the selection
+    handle_selection "$selection"
+}
+
+# Run main function
+main "$@"
