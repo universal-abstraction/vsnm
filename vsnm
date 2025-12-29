@@ -31,7 +31,9 @@ TEMPLATES_DIR="$CONFIG_DIR/templates"
 : "${TERMINAL:=kitty}"
 : "${DATE_FORMAT:=%d-%m-%Y}"
 : "${MENU_LAUNCHER:=wofi}"
-: "${NOTE_TEMPLATE:=default}"
+
+# Daily notes defaults
+: "${DAILY_TEMPLATE:=daily}"
 
 # Recent notes list defaults
 : "${RECENT_LIST_ENABLED:=true}"
@@ -43,6 +45,7 @@ TEMPLATES_DIR="$CONFIG_DIR/templates"
 # Custom notes defaults
 : "${CUSTOM_NOTES_ENABLED:=true}"
 : "${CUSTOM_NOTES_DATE_PREFIX:=true}"
+: "${CUSTOM_NOTES_TEMPLATE:=custom}"
 
 # ============================================================================
 # SECTION 3: INITIALIZATION & CONFIG LOADING
@@ -72,8 +75,10 @@ TERMINAL="kitty"
 DATE_FORMAT="%d-%m-%Y"
 # Menu launcher: wofi, rofi, dmenu, or fzf
 MENU_LAUNCHER="wofi"
-# Default template name (from ~/.config/vsnm/templates/)
-NOTE_TEMPLATE="default"
+
+# === Daily Notes ===
+# Template for daily notes (from ~/.config/vsnm/templates/)
+DAILY_TEMPLATE="daily"
 
 # === Recent Notes List ===
 # Show recent notes list in menu
@@ -96,6 +101,8 @@ CUSTOM_NOTES_ENABLED=true
 # true:  "29-12-2024_meeting.md"
 # false: "meeting.md"
 CUSTOM_NOTES_DATE_PREFIX=true
+# Template for custom notes (from ~/.config/vsnm/templates/)
+CUSTOM_NOTES_TEMPLATE="custom"
 
 # === Hooks ===
 # Custom rewind hook (uncomment to enable)
@@ -107,10 +114,10 @@ CUSTOM_NOTES_DATE_PREFIX=true
 EOF
     fi
 
-    # Create default template if it doesn't exist
-    if [[ ! -f "$TEMPLATES_DIR/default.md" ]]; then
-        cat > "$TEMPLATES_DIR/default.md" << 'EOF'
-# Notes for {{DATE}}
+    # Create daily template if it doesn't exist
+    if [[ ! -f "$TEMPLATES_DIR/daily.md" ]]; then
+        cat > "$TEMPLATES_DIR/daily.md" << 'EOF'
+# {{DATE}}
 
 ## Tasks
 -
@@ -119,6 +126,14 @@ EOF
 
 
 ## Reflections
+
+EOF
+    fi
+
+    # Create custom template if it doesn't exist
+    if [[ ! -f "$TEMPLATES_DIR/custom.md" ]]; then
+        cat > "$TEMPLATES_DIR/custom.md" << 'EOF'
+# {{TITLE}}
 
 EOF
     fi
@@ -263,18 +278,18 @@ get_last_note() {
 
 # --- Template system ---
 
-apply_template() {
+# Apply template for daily notes
+apply_daily_template() {
     local date="$1"
     local output_file="$2"
-    local template_file="$TEMPLATES_DIR/${NOTE_TEMPLATE}.md"
+    local template_file="$TEMPLATES_DIR/${DAILY_TEMPLATE}.md"
 
-    # Use custom template if exists, otherwise use built-in default
     if [[ -f "$template_file" ]]; then
         sed "s/{{DATE}}/$date/g" "$template_file" > "$output_file"
     else
         # Built-in fallback template
         cat > "$output_file" << EOF
-# Notes for $date
+# $date
 
 ## Tasks
 -
@@ -283,6 +298,23 @@ apply_template() {
 
 
 ## Reflections
+
+EOF
+    fi
+}
+
+# Apply template for custom notes
+apply_custom_template() {
+    local title="$1"
+    local output_file="$2"
+    local template_file="$TEMPLATES_DIR/${CUSTOM_NOTES_TEMPLATE}.md"
+
+    if [[ -f "$template_file" ]]; then
+        sed "s/{{TITLE}}/$title/g" "$template_file" > "$output_file"
+    else
+        # Built-in fallback template
+        cat > "$output_file" << EOF
+# $title
 
 EOF
     fi
@@ -300,7 +332,7 @@ create_note() {
         return 0
     fi
 
-    apply_template "$date" "$note_path"
+    apply_daily_template "$date" "$note_path"
 }
 
 rewind_note() {
@@ -399,11 +431,8 @@ create_custom_note() {
         return 0
     fi
 
-    # Create note with template
-    apply_template "$today" "$note_path"
-
-    # Replace title to include custom name
-    sed -i "s/# Notes for $today/# $note_name/" "$note_path"
+    # Create note with custom template
+    apply_custom_template "$note_name" "$note_path"
 
     open_note "$note_path"
 }
