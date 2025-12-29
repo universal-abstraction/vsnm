@@ -37,6 +37,7 @@ TEMPLATES_DIR="$CONFIG_DIR/templates"
 : "${RECENT_LIST_ENABLED:=true}"
 : "${RECENT_LIST_COUNT:=10}"
 : "${RECENT_LIST_INCLUDE_CUSTOM:=false}"
+: "${RECENT_LIST_INCLUDE_TODAY:=false}"
 : "${RECENT_LIST_SORT:=date_modified_desc}"
 
 # Custom notes defaults
@@ -81,6 +82,8 @@ RECENT_LIST_ENABLED=true
 RECENT_LIST_COUNT=10
 # Include custom (non-daily) notes in the list
 RECENT_LIST_INCLUDE_CUSTOM=false
+# Include today's and tomorrow's notes in the list
+RECENT_LIST_INCLUDE_TODAY=false
 # Sort order: date_modified_desc, date_modified_asc,
 #             date_created_desc, date_created_asc,
 #             name_asc, name_desc
@@ -220,15 +223,26 @@ get_recent_notes() {
     all_notes=$(find "$NOTES_DIR" -maxdepth 1 -name "*.md" -type f 2>/dev/null | \
         sed 's|.*/||; s|\.md$||')
 
+    # Build exclusion pattern based on settings
+    local exclude_pattern=""
+    if [[ "$RECENT_LIST_INCLUDE_TODAY" != "true" ]]; then
+        exclude_pattern="^$today$\|^$tomorrow$\|^${today}_\|^${tomorrow}_"
+    fi
+
     local filtered_notes
     if [[ "$RECENT_LIST_INCLUDE_CUSTOM" == "true" ]]; then
-        # Include all notes except today and tomorrow
-        filtered_notes=$(echo "$all_notes" | grep -v "^$today$\|^$tomorrow$\|^${today}_\|^${tomorrow}_")
+        # Include all notes
+        if [[ -n "$exclude_pattern" ]]; then
+            filtered_notes=$(echo "$all_notes" | grep -v "$exclude_pattern")
+        else
+            filtered_notes="$all_notes"
+        fi
     else
         # Only daily notes (matching date format)
-        filtered_notes=$(echo "$all_notes" | \
-            grep -E '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' | \
-            grep -v "^$today$\|^$tomorrow$")
+        filtered_notes=$(echo "$all_notes" | grep -E '^[0-9]{2}-[0-9]{2}-[0-9]{4}$')
+        if [[ -n "$exclude_pattern" ]]; then
+            filtered_notes=$(echo "$filtered_notes" | grep -v "^$today$\|^$tomorrow$")
+        fi
     fi
 
     # Sort and limit
@@ -536,15 +550,15 @@ handle_selection() {
             ;;
 
         *)
-            # Extract date from "📄 DD-MM-YYYY"
-            local note_date
-            note_date=$(echo "$selection" | sed "s/^$ICON_NOTE //" | tr -d ' ')
-            note_path=$(get_note_path "$note_date")
+            # Extract note name from "📄 note-name" (can be daily or custom)
+            local note_name
+            note_name=$(echo "$selection" | sed "s/^$ICON_NOTE //" | tr -d ' ')
+            note_path="$NOTES_DIR/$note_name.md"
 
             if [[ -f "$note_path" ]]; then
                 open_note "$note_path"
             else
-                notify "Note not found: $note_date"
+                notify "Note not found: $note_name"
                 exit 1
             fi
             ;;
