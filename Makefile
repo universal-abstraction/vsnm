@@ -1,7 +1,8 @@
 PREFIX ?= $(HOME)/.local
 BINDIR = $(PREFIX)/bin
+SCRIPTSDIR = scripts
 
-.PHONY: all install uninstall help
+.PHONY: all install uninstall migrate-config help
 
 all: help
 
@@ -9,11 +10,12 @@ help:
 	@echo "vsnm - A minimal note management system"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make install    - Install vsnm to ~/.local/bin"
-	@echo "  make uninstall  - Remove installed files"
+	@echo "  make install        - Install vsnm and migrate config"
+	@echo "  make uninstall      - Remove installed files"
+	@echo "  make migrate-config - Migrate existing config to current version"
 	@echo ""
 	@echo "Variables:"
-	@echo "  PREFIX          - Installation prefix (default: ~/.local)"
+	@echo "  PREFIX              - Installation prefix (default: ~/.local)"
 
 install:
 	@echo "Installing vsnm..."
@@ -23,9 +25,17 @@ install:
 	@echo ""
 	@echo "✓ Installed to $(BINDIR)/vsnm"
 	@echo ""
-	@echo "Configuration will be created automatically on first run at:"
-	@echo "  ~/.config/vsnm/config"
-	@echo ""
+	@# Run config migration if config exists
+	@if [ -f "$(HOME)/.config/vsnm/config" ]; then \
+		echo "Checking config..."; \
+		echo ""; \
+		$(SCRIPTSDIR)/migrate-config.sh; \
+		echo ""; \
+	else \
+		echo "Configuration will be created automatically on first run at:"; \
+		echo "  ~/.config/vsnm/config"; \
+		echo ""; \
+	fi
 	@echo "Add to your window manager config:"
 	@echo "  Hyprland:  bind = SUPER, N, exec, vsnm"
 	@echo "  Sway:      bindsym \$$mod+n exec vsnm"
@@ -40,3 +50,6 @@ uninstall:
 	@echo ""
 	@echo "Note: Configuration at ~/.config/vsnm/ was preserved"
 	@echo "To remove config: rm -rf ~/.config/vsnm"
+
+migrate-config:
+	@$(SCRIPTSDIR)/migrate-config.sh
