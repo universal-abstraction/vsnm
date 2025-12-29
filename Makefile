@@ -1,5 +1,6 @@
 PREFIX ?= $(HOME)/.local
 BINDIR = $(PREFIX)/bin
+DATADIR = $(PREFIX)/share/vsnm
 SCRIPTSDIR = scripts
 
 .PHONY: all install uninstall migrate-config help
@@ -20,10 +21,15 @@ help:
 install:
 	@echo "Installing vsnm..."
 	@mkdir -p $(BINDIR)
+	@mkdir -p $(DATADIR)/defaults
+	@mkdir -p $(DATADIR)/templates
 	@cp vsnm $(BINDIR)/vsnm
 	@chmod +x $(BINDIR)/vsnm
+	@cp defaults/config $(DATADIR)/defaults/
+	@cp defaults/templates/*.md $(DATADIR)/templates/
 	@echo ""
 	@echo "✓ Installed to $(BINDIR)/vsnm"
+	@echo "✓ Data installed to $(DATADIR)"
 	@echo ""
 	@# Run config migration if config exists
 	@if [ -f "$(HOME)/.config/vsnm/config" ]; then \
@@ -46,7 +52,9 @@ install:
 uninstall:
 	@echo "Uninstalling vsnm..."
 	@rm -f $(BINDIR)/vsnm
+	@rm -rf $(DATADIR)
 	@echo "Removed $(BINDIR)/vsnm"
+	@echo "Removed $(DATADIR)"
 	@echo ""
 	@echo "Note: Configuration at ~/.config/vsnm/ was preserved"
 	@echo "To remove config: rm -rf ~/.config/vsnm"

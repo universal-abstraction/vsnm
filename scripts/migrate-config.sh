@@ -7,8 +7,11 @@
 set -euo pipefail
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/vsnm"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/vsnm"
 CONFIG_FILE="$CONFIG_DIR/config"
-TEMPLATES_DIR="$CONFIG_DIR/templates"
+TEMPLATES_DIR="$DATA_DIR/templates"
+DEFAULTS_DIR="$DATA_DIR/defaults"
+DEFAULT_CONFIG="$DEFAULTS_DIR/config"
 
 # Colors for output
 RED='\033[0;31m'
@@ -40,60 +43,15 @@ declare -A RENAMED_OPTIONS=(
     ["RECENT_NOTES_COUNT"]="RECENT_LIST_COUNT"
 )
 
-# Generate fresh config template
+# Read fresh config template from defaults
 generate_template() {
-    cat << 'EOF'
-# vsnm configuration
-
-# === General ===
-# Notes directory
-NOTES_DIR="$HOME/notes"
-# Editor to use for editing notes
-EDITOR="nvim"
-# Terminal emulator
-TERMINAL="kitty"
-# Date format for note filenames (see 'man date')
-# Examples: %Y-%m-%d (2024-12-15), %d-%m-%Y (15-12-2024)
-DATE_FORMAT="%d-%m-%Y"
-# Menu launcher: wofi, rofi, dmenu, or fzf
-MENU_LAUNCHER="wofi"
-
-# === Daily Notes ===
-# Template for daily notes (from ~/.config/vsnm/templates/)
-DAILY_TEMPLATE="daily"
-
-# === Recent Notes List ===
-# Show recent notes list in menu
-RECENT_LIST_ENABLED=true
-# Number of notes to show
-RECENT_LIST_COUNT=10
-# Include custom (non-daily) notes in the list
-RECENT_LIST_INCLUDE_CUSTOM=false
-# Include today's and tomorrow's notes in the list
-RECENT_LIST_INCLUDE_TODAY=false
-# Sort order: date_modified_desc, date_modified_asc,
-#             date_created_desc, date_created_asc,
-#             name_asc, name_desc
-RECENT_LIST_SORT="date_modified_desc"
-
-# === Custom Notes ===
-# Show "New Note" option in menu
-CUSTOM_NOTES_ENABLED=true
-# Add date prefix to custom note filename
-# true:  "29-12-2024_meeting.md"
-# false: "meeting.md"
-CUSTOM_NOTES_DATE_PREFIX=true
-# Template for custom notes (from ~/.config/vsnm/templates/)
-CUSTOM_NOTES_TEMPLATE="custom"
-
-# === Hooks ===
-# Custom rewind hook (uncomment to enable)
-# rewind_hook() {
-#     # Custom logic for rewinding notes
-#     # $1 = source file, $2 = destination file
-#     cat "$1" | sed 's/\[ \]/[ ]/g' > "$2"
-# }
-EOF
+    if [[ -f "$DEFAULT_CONFIG" ]]; then
+        cat "$DEFAULT_CONFIG"
+    else
+        echo "Error: default config not found at $DEFAULT_CONFIG" >&2
+        echo "Run 'make install' to install vsnm properly" >&2
+        exit 1
+    fi
 }
 
 # Check if option is valid
