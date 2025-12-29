@@ -60,54 +60,41 @@ init_config() {
 # vsnm configuration
 
 # === General ===
-
 # Notes directory
 NOTES_DIR="$HOME/notes"
-
 # Editor to use for editing notes
 EDITOR="nvim"
-
 # Terminal emulator
 TERMINAL="kitty"
-
 # Date format for note filenames (see 'man date')
 # Examples: %Y-%m-%d (2024-12-15), %d-%m-%Y (15-12-2024)
 DATE_FORMAT="%d-%m-%Y"
-
 # Menu launcher: wofi, rofi, dmenu, or fzf
 MENU_LAUNCHER="wofi"
-
 # Default template name (from ~/.config/vsnm/templates/)
 NOTE_TEMPLATE="default"
 
 # === Recent Notes List ===
-
 # Show recent notes list in menu
 RECENT_LIST_ENABLED=true
-
 # Number of notes to show
 RECENT_LIST_COUNT=10
-
 # Include custom (non-daily) notes in the list
 RECENT_LIST_INCLUDE_CUSTOM=false
-
 # Sort order: date_modified_desc, date_modified_asc,
 #             date_created_desc, date_created_asc,
 #             name_asc, name_desc
 RECENT_LIST_SORT="date_modified_desc"
 
 # === Custom Notes ===
-
 # Show "New Note" option in menu
 CUSTOM_NOTES_ENABLED=true
-
 # Add date prefix to custom note filename
 # true:  "29-12-2024_meeting.md"
 # false: "meeting.md"
 CUSTOM_NOTES_DATE_PREFIX=true
 
 # === Hooks ===
-
 # Custom rewind hook (uncomment to enable)
 # rewind_hook() {
 #     # Custom logic for rewinding notes
