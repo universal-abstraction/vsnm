@@ -31,8 +31,17 @@ TEMPLATES_DIR="$CONFIG_DIR/templates"
 : "${TERMINAL:=kitty}"
 : "${DATE_FORMAT:=%d-%m-%Y}"
 : "${MENU_LAUNCHER:=wofi}"
-: "${RECENT_NOTES_COUNT:=10}"
 : "${NOTE_TEMPLATE:=default}"
+
+# Recent notes list defaults
+: "${RECENT_LIST_ENABLED:=true}"
+: "${RECENT_LIST_COUNT:=10}"
+: "${RECENT_LIST_INCLUDE_CUSTOM:=false}"
+: "${RECENT_LIST_SORT:=date_modified}"
+
+# Custom notes defaults
+: "${CUSTOM_NOTES_ENABLED:=true}"
+: "${CUSTOM_NOTES_DATE_PREFIX:=true}"
 
 # ============================================================================
 # SECTION 3: INITIALIZATION & CONFIG LOADING
@@ -49,7 +58,8 @@ init_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
         cat > "$CONFIG_FILE" << 'EOF'
 # vsnm configuration
-# Override any of these values as needed
+
+# === General ===
 
 # Notes directory
 NOTES_DIR="$HOME/notes"
@@ -67,18 +77,36 @@ DATE_FORMAT="%d-%m-%Y"
 # Menu launcher: wofi, rofi, dmenu, or fzf
 MENU_LAUNCHER="wofi"
 
-# Number of recent notes to show in menu
-RECENT_NOTES_COUNT="10"
-
 # Default template name (from ~/.config/vsnm/templates/)
 NOTE_TEMPLATE="default"
 
-# === Advanced Configuration ===
+# === Recent Notes List ===
 
-# Custom rewind mode: simple, smart, custom
-# REWIND_MODE="simple"
+# Show recent notes list in menu
+RECENT_LIST_ENABLED=true
 
-# Custom hooks (uncomment to enable)
+# Number of notes to show
+RECENT_LIST_COUNT=10
+
+# Include custom (non-daily) notes in the list
+RECENT_LIST_INCLUDE_CUSTOM=false
+
+# Sort order: "date_modified", "date_created", "name"
+RECENT_LIST_SORT="date_modified"
+
+# === Custom Notes ===
+
+# Show "New Note" option in menu
+CUSTOM_NOTES_ENABLED=true
+
+# Add date prefix to custom note filename
+# true:  "29-12-2024_meeting.md"
+# false: "meeting.md"
+CUSTOM_NOTES_DATE_PREFIX=true
+
+# === Hooks ===
+
+# Custom rewind hook (uncomment to enable)
 # rewind_hook() {
 #     # Custom logic for rewinding notes
 #     # $1 = source file, $2 = destination file
@@ -141,18 +169,71 @@ note_exists() {
 
 # --- Note listing ---
 
+# Check if filename is a daily note (matches date format)
+is_daily_note() {
+    local name="$1"
+    [[ "$name" =~ ^[0-9]{2}-[0-9]{2}-[0-9]{4}$ ]]
+}
+
+# Sort notes based on RECENT_LIST_SORT setting
+sort_notes() {
+    case "$RECENT_LIST_SORT" in
+        date_modified)
+            # Sort by file modification time (newest first)
+            while IFS= read -r name; do
+                local file="$NOTES_DIR/$name.md"
+                if [[ -f "$file" ]]; then
+                    echo "$(stat -c %Y "$file") $name"
+                fi
+            done | sort -rn | cut -d' ' -f2-
+            ;;
+        date_created)
+            # Sort by file creation time (newest first)
+            # Note: uses birth time if available, falls back to change time
+            while IFS= read -r name; do
+                local file="$NOTES_DIR/$name.md"
+                if [[ -f "$file" ]]; then
+                    local ctime
+                    ctime=$(stat -c %W "$file" 2>/dev/null)
+                    # If birth time not available (0 or empty), use change time
+                    [[ "$ctime" == "0" || -z "$ctime" ]] && ctime=$(stat -c %Z "$file")
+                    echo "$ctime $name"
+                fi
+            done | sort -rn | cut -d' ' -f2-
+            ;;
+        name)
+            # Sort alphabetically by name
+            sort
+            ;;
+        *)
+            # Default: pass through (date_modified behavior via find order)
+            cat
+            ;;
+    esac
+}
+
 get_recent_notes() {
     local today tomorrow
     today=$(get_today)
     tomorrow=$(get_tomorrow)
 
-    # List all markdown files, extract dates, sort, filter, limit
-    find "$NOTES_DIR" -maxdepth 1 -name "*.md" -type f 2>/dev/null | \
-        sed 's|.*/||; s|\.md$||' | \
-        grep -E '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' | \
-        sort -t- -k3 -k2 -k1 -r | \
-        grep -v "^$today$\|^$tomorrow$" | \
-        head -n "$RECENT_NOTES_COUNT"
+    local all_notes
+    all_notes=$(find "$NOTES_DIR" -maxdepth 1 -name "*.md" -type f 2>/dev/null | \
+        sed 's|.*/||; s|\.md$||')
+
+    local filtered_notes
+    if [[ "$RECENT_LIST_INCLUDE_CUSTOM" == "true" ]]; then
+        # Include all notes except today and tomorrow
+        filtered_notes=$(echo "$all_notes" | grep -v "^$today$\|^$tomorrow$\|^${today}_\|^${tomorrow}_")
+    else
+        # Only daily notes (matching date format)
+        filtered_notes=$(echo "$all_notes" | \
+            grep -E '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' | \
+            grep -v "^$today$\|^$tomorrow$")
+    fi
+
+    # Sort and limit
+    echo "$filtered_notes" | sort_notes | head -n "$RECENT_LIST_COUNT"
 }
 
 get_last_note() {
@@ -288,10 +369,14 @@ create_custom_note() {
     # Exit if name is empty after normalization
     [[ -z "$normalized" ]] && notify "Invalid note name" && return 1
 
-    # Create filename: date_name.md
-    local today
+    # Create filename based on CUSTOM_NOTES_DATE_PREFIX setting
+    local today filename
     today=$(get_today)
-    local filename="${today}_${normalized}.md"
+    if [[ "$CUSTOM_NOTES_DATE_PREFIX" == "true" ]]; then
+        filename="${today}_${normalized}.md"
+    else
+        filename="${normalized}.md"
+    fi
     local note_path="$NOTES_DIR/$filename"
 
     # Check if already exists
@@ -338,19 +423,25 @@ build_menu() {
     today=$(get_today)
     tomorrow=$(get_tomorrow)
 
-    # Fixed order: Today, Tomorrow, Rewind, New Note
+    # Fixed order: Today, Tomorrow, Rewind
     echo "$ICON_TODAY Today ($today)"
     echo "$ICON_TOMORROW Tomorrow ($tomorrow)"
     echo "$ICON_REWIND Rewind"
-    echo "$ICON_NEW New Note"
 
-    # Recent notes
-    local recent
-    recent=$(get_recent_notes)
-    if [[ -n "$recent" ]]; then
-        while IFS= read -r note; do
-            echo "$ICON_NOTE $note"
-        done <<< "$recent"
+    # New Note option (if enabled)
+    if [[ "$CUSTOM_NOTES_ENABLED" == "true" ]]; then
+        echo "$ICON_NEW New Note"
+    fi
+
+    # Recent notes (if enabled)
+    if [[ "$RECENT_LIST_ENABLED" == "true" ]]; then
+        local recent
+        recent=$(get_recent_notes)
+        if [[ -n "$recent" ]]; then
+            while IFS= read -r note; do
+                echo "$ICON_NOTE $note"
+            done <<< "$recent"
+        fi
     fi
 
     # Browse option at the end
