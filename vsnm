@@ -37,7 +37,7 @@ TEMPLATES_DIR="$CONFIG_DIR/templates"
 : "${RECENT_LIST_ENABLED:=true}"
 : "${RECENT_LIST_COUNT:=10}"
 : "${RECENT_LIST_INCLUDE_CUSTOM:=false}"
-: "${RECENT_LIST_SORT:=date_modified}"
+: "${RECENT_LIST_SORT:=date_modified_desc}"
 
 # Custom notes defaults
 : "${CUSTOM_NOTES_ENABLED:=true}"
@@ -91,8 +91,10 @@ RECENT_LIST_COUNT=10
 # Include custom (non-daily) notes in the list
 RECENT_LIST_INCLUDE_CUSTOM=false
 
-# Sort order: "date_modified", "date_created", "name"
-RECENT_LIST_SORT="date_modified"
+# Sort order: date_modified_desc, date_modified_asc,
+#             date_created_desc, date_created_asc,
+#             name_asc, name_desc
+RECENT_LIST_SORT="date_modified_desc"
 
 # === Custom Notes ===
 
@@ -176,20 +178,23 @@ is_daily_note() {
 }
 
 # Sort notes based on RECENT_LIST_SORT setting
+# Format: {field}_{direction} where direction is asc or desc
 sort_notes() {
     case "$RECENT_LIST_SORT" in
-        date_modified)
-            # Sort by file modification time (newest first)
+        date_modified_desc|date_modified_asc)
+            local sort_flag="-rn"
+            [[ "$RECENT_LIST_SORT" == "date_modified_asc" ]] && sort_flag="-n"
             while IFS= read -r name; do
                 local file="$NOTES_DIR/$name.md"
                 if [[ -f "$file" ]]; then
                     echo "$(stat -c %Y "$file") $name"
                 fi
-            done | sort -rn | cut -d' ' -f2-
+            done | sort $sort_flag | cut -d' ' -f2-
             ;;
-        date_created)
-            # Sort by file creation time (newest first)
+        date_created_desc|date_created_asc)
             # Note: uses birth time if available, falls back to change time
+            local sort_flag="-rn"
+            [[ "$RECENT_LIST_SORT" == "date_created_asc" ]] && sort_flag="-n"
             while IFS= read -r name; do
                 local file="$NOTES_DIR/$name.md"
                 if [[ -f "$file" ]]; then
@@ -199,15 +204,22 @@ sort_notes() {
                     [[ "$ctime" == "0" || -z "$ctime" ]] && ctime=$(stat -c %Z "$file")
                     echo "$ctime $name"
                 fi
-            done | sort -rn | cut -d' ' -f2-
+            done | sort $sort_flag | cut -d' ' -f2-
             ;;
-        name)
-            # Sort alphabetically by name
+        name_asc)
             sort
             ;;
+        name_desc)
+            sort -r
+            ;;
         *)
-            # Default: pass through (date_modified behavior via find order)
-            cat
+            # Default: newest first by modification time
+            while IFS= read -r name; do
+                local file="$NOTES_DIR/$name.md"
+                if [[ -f "$file" ]]; then
+                    echo "$(stat -c %Y "$file") $name"
+                fi
+            done | sort -rn | cut -d' ' -f2-
             ;;
     esac
 }
