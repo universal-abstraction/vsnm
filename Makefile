@@ -25,7 +25,7 @@ install:
 	@mkdir -p $(DATADIR)/templates
 	@cp vsnm $(BINDIR)/vsnm
 	@chmod +x $(BINDIR)/vsnm
-	@cp defaults/config $(DATADIR)/defaults/
+	@cp -r defaults $(DATADIR)/
 	@cp defaults/templates/*.md $(DATADIR)/templates/
 	@echo ""
 	@echo "✓ Installed to $(BINDIR)/vsnm"
