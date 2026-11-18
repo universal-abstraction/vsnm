@@ -1,7 +1,14 @@
 #!/bin/bash
 #
 # vsnm config migration script
-# Migrates user config to match current version's options
+#
+# Rebuilds the user config from the current default config, keeping the
+# user's values, renaming options that changed name, and dropping options
+# that no longer exist. Function definitions (hooks such as rewind_hook)
+# are copied over unchanged.
+#
+# Usage: migrate-config.sh [DEFAULT_CONFIG]
+#   DEFAULT_CONFIG defaults to the installed copy in $XDG_DATA_HOME/vsnm.
 #
 
 set -euo pipefail
@@ -9,9 +16,7 @@ set -euo pipefail
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/vsnm"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/vsnm"
 CONFIG_FILE="$CONFIG_DIR/config"
-TEMPLATES_DIR="$DATA_DIR/templates"
-DEFAULTS_DIR="$DATA_DIR/defaults"
-DEFAULT_CONFIG="$DEFAULTS_DIR/config"
+DEFAULT_CONFIG="${1:-$DATA_DIR/defaults/config}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -43,154 +48,121 @@ declare -A RENAMED_OPTIONS=(
     ["RECENT_NOTES_COUNT"]="RECENT_LIST_COUNT"
 )
 
-# Read fresh config template from defaults
-generate_template() {
-    if [[ -f "$DEFAULT_CONFIG" ]]; then
-        cat "$DEFAULT_CONFIG"
-    else
-        echo "Error: default config not found at $DEFAULT_CONFIG" >&2
-        echo "Run 'make install' to install vsnm properly" >&2
-        exit 1
-    fi
-}
-
-# Check if option is valid
 is_valid_option() {
-    local opt="$1"
+    local opt="$1" valid
     for valid in "${VALID_OPTIONS[@]}"; do
         [[ "$opt" == "$valid" ]] && return 0
     done
     return 1
 }
 
-# Get new name if option was renamed
-get_new_name() {
-    local opt="$1"
-    echo "${RENAMED_OPTIONS[$opt]:-}"
-}
-
-# Extract option value from config line
-get_option_value() {
-    local line="$1"
-    # Handle both quoted and unquoted values
-    echo "$line" | sed 's/^[^=]*=//' | sed 's/^["'"'"']//' | sed 's/["'"'"']$//'
-}
-
-# Main migration function
 migrate_config() {
-    # Check if config exists
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        echo -e "${GREEN}No existing config found. Fresh config will be created on first run.${NC}"
+        echo -e "${GREEN}No existing config found. A fresh config will be created on first run.${NC}"
+        return 0
+    fi
+
+    if [[ ! -f "$DEFAULT_CONFIG" ]]; then
+        echo "Error: default config not found at $DEFAULT_CONFIG" >&2
+        echo "Run 'make install' to install vsnm properly" >&2
+        exit 1
+    fi
+
+    # Parse the existing config. Values are kept exactly as written
+    # (quotes, variables and all), so sourcing the new config gives the
+    # same result as before.
+    declare -A user_values=()
+    local deprecated_options=()
+    local renamed_options=()
+    local hooks=""
+    local in_function=false
+    local line name value new_name
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if $in_function; then
+            hooks+="$line"$'\n'
+            [[ "$line" =~ ^\} ]] && in_function=false
+            continue
+        fi
+
+        # Function definition, e.g. "rewind_hook() {"
+        if [[ "$line" =~ ^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\) ]]; then
+            hooks+="$line"$'\n'
+            # One-line definitions end on the same line
+            [[ "$line" =~ \}[[:space:]]*$ ]] || in_function=true
+            continue
+        fi
+
+        # Assignment, e.g. NOTES_DIR="$HOME/notes"
+        if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            name="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+
+            new_name="${RENAMED_OPTIONS[$name]:-}"
+            if [[ -n "$new_name" ]]; then
+                renamed_options+=("$name -> $new_name")
+                name="$new_name"
+            fi
+
+            if is_valid_option "$name"; then
+                user_values["$name"]="$value"
+            else
+                deprecated_options+=("$name")
+            fi
+        fi
+    done < "$CONFIG_FILE"
+
+    # Build the new config: default config with the user's values put back
+    local new_config="" key
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+            key="${BASH_REMATCH[1]}"
+            if [[ -n "${user_values[$key]+set}" ]]; then
+                line="$key=${user_values[$key]}"
+            fi
+        fi
+        new_config+="$line"$'\n'
+    done < "$DEFAULT_CONFIG"
+
+    if [[ -n "$hooks" ]]; then
+        new_config+=$'\n'"# --- Hooks from your previous config ---"$'\n'"$hooks"
+    fi
+
+    # Nothing to do if the result is identical
+    if [[ "$new_config" == "$(cat "$CONFIG_FILE")"$'\n' ]]; then
+        echo -e "${GREEN}✓${NC} Config is up to date: $CONFIG_FILE"
         return 0
     fi
 
     echo "Migrating config: $CONFIG_FILE"
     echo ""
 
-    # Create backup
-    local backup_file="$CONFIG_FILE.backup.$(date +%Y%m%d_%H%M%S)"
+    local backup_file
+    backup_file="$CONFIG_FILE.backup.$(date +%Y%m%d_%H%M%S)"
     cp "$CONFIG_FILE" "$backup_file"
     echo -e "${GREEN}✓${NC} Backup created: $backup_file"
 
-    # Parse existing config
-    declare -A user_values
-    local deprecated_options=()
-    local renamed_options=()
+    printf '%s' "$new_config" > "$CONFIG_FILE"
+    echo -e "${GREEN}✓${NC} Config migrated"
 
-    while IFS= read -r line; do
-        # Skip comments and empty lines
-        [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        [[ -z "${line// }" ]] && continue
-
-        # Skip function definitions (hooks)
-        [[ "$line" =~ ^[[:space:]]*(rewind_hook|.*\(\)) ]] && continue
-        [[ "$line" =~ ^\} ]] && continue
-        [[ "$line" =~ ^[[:space:]]+ ]] && continue
-
-        # Extract option name
-        local opt_name
-        opt_name=$(echo "$line" | cut -d'=' -f1 | tr -d ' ')
-
-        [[ -z "$opt_name" ]] && continue
-
-        local opt_value
-        opt_value=$(get_option_value "$line")
-
-        # Check if option was renamed
-        local new_name
-        new_name=$(get_new_name "$opt_name")
-        if [[ -n "$new_name" ]]; then
-            renamed_options+=("$opt_name -> $new_name")
-            user_values["$new_name"]="$opt_value"
-            continue
-        fi
-
-        # Check if option is still valid
-        if is_valid_option "$opt_name"; then
-            user_values["$opt_name"]="$opt_value"
-        else
-            deprecated_options+=("$opt_name")
-        fi
-    done < "$CONFIG_FILE"
-
-    # Generate new config with user values
-    local new_config
-    new_config=$(generate_template)
-
-    # Replace default values with user values
-    for opt in "${!user_values[@]}"; do
-        local value="${user_values[$opt]}"
-        # Escape special characters for sed
-        local escaped_value
-        escaped_value=$(echo "$value" | sed 's/[&/\]/\\&/g')
-
-        # Handle different value formats (quoted strings vs bare values)
-        if [[ "$value" =~ ^\$ ]] || [[ "$value" == "true" ]] || [[ "$value" == "false" ]] || [[ "$value" =~ ^[0-9]+$ ]]; then
-            # Unquoted value (variables, booleans, numbers)
-            new_config=$(echo "$new_config" | sed "s/^${opt}=.*/${opt}=${escaped_value}/")
-        else
-            # Quoted string value
-            new_config=$(echo "$new_config" | sed "s/^${opt}=.*/${opt}=\"${escaped_value}\"/")
-        fi
-    done
-
-    # Write new config
-    echo "$new_config" > "$CONFIG_FILE"
-    echo -e "${GREEN}✓${NC} Config migrated successfully"
-
-    # Report renamed options
     if [[ ${#renamed_options[@]} -gt 0 ]]; then
         echo ""
-        echo -e "${YELLOW}Renamed options (automatically migrated):${NC}"
-        for opt in "${renamed_options[@]}"; do
-            echo "  • $opt"
-        done
+        echo -e "${YELLOW}Renamed options (migrated automatically):${NC}"
+        printf '  • %s\n' "${renamed_options[@]}"
     fi
 
-    # Report deprecated options
     if [[ ${#deprecated_options[@]} -gt 0 ]]; then
         echo ""
-        echo -e "${RED}Deprecated options (removed from config):${NC}"
-        for opt in "${deprecated_options[@]}"; do
-            echo "  • $opt"
-        done
+        echo -e "${RED}Removed options (no longer supported):${NC}"
+        printf '  • %s\n' "${deprecated_options[@]}"
         echo ""
-        echo "These options are no longer supported and have been removed."
-        echo "Check the backup file if you need to reference old values."
+        echo "Their old values are in the backup file."
     fi
 
-    # Report migrated values
-    if [[ ${#user_values[@]} -gt 0 ]]; then
+    if [[ -n "$hooks" ]]; then
         echo ""
-        echo -e "${GREEN}Preserved user settings:${NC}"
-        for opt in "${!user_values[@]}"; do
-            echo "  • $opt = ${user_values[$opt]}"
-        done
+        echo -e "${GREEN}Hooks preserved${NC} at the end of the config."
     fi
-
-    echo ""
-    echo -e "${GREEN}Migration complete!${NC}"
 }
 
-# Run migration
 migrate_config

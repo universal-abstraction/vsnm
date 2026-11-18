@@ -7,14 +7,16 @@ NOTES_DIR="$HOME/notes"
 EDITOR="nvim"
 # Terminal emulator
 TERMINAL="kitty"
-# Date format for note filenames (see 'man date')
+# Date format for daily note filenames (see 'man date')
 # Examples: %Y-%m-%d (2024-12-15), %d-%m-%Y (15-12-2024)
+# Don't use "/" or "_": they clash with file paths and custom note names
 DATE_FORMAT="%d-%m-%Y"
 # Menu launcher: wofi, rofi, dmenu, or fzf
 MENU_LAUNCHER="wofi"
 
 # === Daily Notes ===
-# Template for daily notes (from ~/.config/vsnm/templates/)
+# Template for daily notes. Looked up in ~/.config/vsnm/templates/ first,
+# then in the installed templates.
 DAILY_TEMPLATE="daily"
 
 # === Recent Notes List ===
@@ -38,13 +40,18 @@ CUSTOM_NOTES_ENABLED=true
 # true:  "29-12-2024_meeting.md"
 # false: "meeting.md"
 CUSTOM_NOTES_DATE_PREFIX=true
-# Template for custom notes (from ~/.config/vsnm/templates/)
+# Template for custom notes (looked up the same way as DAILY_TEMPLATE)
 CUSTOM_NOTES_TEMPLATE="custom"
 
 # === Hooks ===
-# Custom rewind hook (uncomment to enable)
+# Custom rewind hook (uncomment to enable).
+# $1 = previous daily note, $2 = today's note to create.
+# Example: start today's note with the unfinished tasks only.
 # rewind_hook() {
-#     # Custom logic for rewinding notes
-#     # $1 = source file, $2 = destination file
-#     cat "$1" | sed 's/\[ \]/[ ]/g' > "$2"
+#     {
+#         echo "# $(date +"$DATE_FORMAT")"
+#         echo
+#         echo "## Tasks"
+#         grep -- '- \[ \]' "$1" || true
+#     } > "$2"
 # }

@@ -3,17 +3,18 @@ BINDIR = $(PREFIX)/bin
 DATADIR = $(PREFIX)/share/vsnm
 SCRIPTSDIR = scripts
 
-.PHONY: all install uninstall migrate-config help
+.PHONY: all install uninstall migrate-config lint help
 
 all: help
 
 help:
-	@echo "vsnm - A minimal note management system"
+	@echo "vsnm - a minimal note manager"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make install        - Install vsnm and migrate config"
-	@echo "  make uninstall      - Remove installed files"
-	@echo "  make migrate-config - Migrate existing config to current version"
+	@echo "  make install        - Install vsnm and migrate an existing config"
+	@echo "  make uninstall      - Remove installed files (keeps your config and notes)"
+	@echo "  make migrate-config - Migrate an existing config to the current version"
+	@echo "  make lint           - Run shellcheck"
 	@echo ""
 	@echo "Variables:"
 	@echo "  PREFIX              - Installation prefix (default: ~/.local)"
@@ -32,13 +33,11 @@ install:
 	@echo "✓ Data installed to $(DATADIR)"
 	@echo ""
 	@# Run config migration if config exists
-	@if [ -f "$(HOME)/.config/vsnm/config" ]; then \
-		echo "Checking config..."; \
-		echo ""; \
-		$(SCRIPTSDIR)/migrate-config.sh; \
+	@if [ -f "$${XDG_CONFIG_HOME:-$$HOME/.config}/vsnm/config" ]; then \
+		$(SCRIPTSDIR)/migrate-config.sh defaults/config; \
 		echo ""; \
 	else \
-		echo "Configuration will be created automatically on first run at:"; \
+		echo "Configuration will be created on first run at:"; \
 		echo "  ~/.config/vsnm/config"; \
 		echo ""; \
 	fi
@@ -60,4 +59,7 @@ uninstall:
 	@echo "To remove config: rm -rf ~/.config/vsnm"
 
 migrate-config:
-	@$(SCRIPTSDIR)/migrate-config.sh
+	@$(SCRIPTSDIR)/migrate-config.sh defaults/config
+
+lint:
+	shellcheck vsnm $(SCRIPTSDIR)/migrate-config.sh

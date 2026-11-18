@@ -1,13 +1,14 @@
 #!/bin/bash
 #
-# vsnm - A minimal, keyboard-driven note management system
-# https://github.com/YOUR_USERNAME/vsnm
+# vsnm - A minimal, keyboard-driven note manager
+# https://github.com/universal-abstraction/vsnm
 #
 # Usage: vsnm [options]
 #
 # Options:
-#   --help    Show this help message
-#   --config  Print config file location
+#   -h, --help     Show this help message
+#   --config       Print config file location
+#   -v, --version  Show version information
 #
 
 set -euo pipefail
@@ -17,8 +18,26 @@ set -euo pipefail
 # ============================================================================
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/vsnm"
-DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/vsnm"
 CONFIG_FILE="$CONFIG_DIR/config"
+USER_TEMPLATES_DIR="$CONFIG_DIR/templates"
+
+# Installed data (default config and templates). Searched in XDG_DATA_HOME
+# first, then XDG_DATA_DIRS, so both "make install" and
+# "make install PREFIX=/usr/local" work.
+find_data_dir() {
+    local dir
+    local IFS=:
+    for dir in "${XDG_DATA_HOME:-$HOME/.local/share}" \
+               ${XDG_DATA_DIRS:-/usr/local/share:/usr/share}; do
+        if [[ -f "$dir/vsnm/defaults/config" ]]; then
+            echo "$dir/vsnm"
+            return 0
+        fi
+    done
+    return 1
+}
+
+DATA_DIR="$(find_data_dir || true)"
 TEMPLATES_DIR="$DATA_DIR/templates"
 DEFAULTS_DIR="$DATA_DIR/defaults"
 
@@ -48,37 +67,35 @@ DEFAULTS_DIR="$DATA_DIR/defaults"
 : "${CUSTOM_NOTES_DATE_PREFIX:=true}"
 : "${CUSTOM_NOTES_TEMPLATE:=custom}"
 
+# How many days back Rewind looks for the previous daily note
+REWIND_MAX_DAYS=366
+
 # ============================================================================
 # SECTION 3: INITIALIZATION & CONFIG LOADING
 # ============================================================================
 
 # Initialize configuration directory structure
 init_config() {
-    # Create config directory if it doesn't exist
+    if [[ -z "$DATA_DIR" ]]; then
+        echo "Error: vsnm data files not found" >&2
+        echo "Run 'make install' to install vsnm properly" >&2
+        exit 1
+    fi
+
     mkdir -p "$CONFIG_DIR"
 
     # Copy default config if it doesn't exist
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        if [[ -f "$DEFAULTS_DIR/config" ]]; then
-            cp "$DEFAULTS_DIR/config" "$CONFIG_FILE"
-        else
-            echo "Error: defaults not found at $DEFAULTS_DIR" >&2
-            echo "Run 'make install' to install vsnm properly" >&2
-            exit 1
-        fi
-    fi
-
-    # Check that templates directory exists (installed by make install)
-    if [[ ! -d "$TEMPLATES_DIR" ]]; then
-        echo "Error: templates not found at $TEMPLATES_DIR" >&2
-        echo "Run 'make install' to install vsnm properly" >&2
-        exit 1
+        cp "$DEFAULTS_DIR/config" "$CONFIG_FILE"
     fi
 }
 
 # Load user configuration
 load_config() {
-    [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$CONFIG_FILE"
+    fi
 }
 
 # ============================================================================
@@ -95,8 +112,37 @@ get_tomorrow() {
     date -d tomorrow +"$DATE_FORMAT"
 }
 
-get_yesterday() {
-    date -d yesterday +"$DATE_FORMAT"
+get_days_ago() {
+    date -d "$1 days ago" +"$DATE_FORMAT"
+}
+
+# Regex that matches a note name produced by DATE_FORMAT. Common numeric
+# specifiers get exact patterns; any other specifier matches a run of
+# characters without "_" (the separator used by date-prefixed custom notes).
+date_format_regex() {
+    local fmt="$DATE_FORMAT" re="" c i
+    for ((i = 0; i < ${#fmt}; i++)); do
+        c="${fmt:i:1}"
+        if [[ "$c" == "%" && $((i + 1)) -lt ${#fmt} ]]; then
+            i=$((i + 1))
+            case "${fmt:i:1}" in
+                Y) re+='[0-9]{4}' ;;
+                y|m|d|H|M|S) re+='[0-9]{2}' ;;
+                j) re+='[0-9]{3}' ;;
+                F) re+='[0-9]{4}-[0-9]{2}-[0-9]{2}' ;;
+                %) re+='%' ;;
+                *) re+='[^_]+' ;;
+            esac
+        else
+            case "$c" in
+                '.'|'^'|'$'|'*'|'+'|'?'|'('|')'|'['|']'|'{'|'}'|'|'|\\)
+                    re+="\\$c" ;;
+                *)
+                    re+="$c" ;;
+            esac
+        fi
+    done
+    echo "^${re}\$"
 }
 
 # --- Path helpers ---
@@ -106,141 +152,111 @@ get_note_path() {
     echo "$NOTES_DIR/$date.md"
 }
 
-note_exists() {
-    local date="$1"
-    [[ -f "$(get_note_path "$date")" ]]
-}
-
 # --- Note listing ---
 
-# Check if filename is a daily note (matches date format)
+DAILY_NOTE_REGEX=""
+
+# Check if a note name is a daily note (matches DATE_FORMAT)
 is_daily_note() {
     local name="$1"
-    [[ "$name" =~ ^[0-9]{2}-[0-9]{2}-[0-9]{4}$ ]]
+    [[ -n "$DAILY_NOTE_REGEX" ]] || DAILY_NOTE_REGEX="$(date_format_regex)"
+    [[ "$name" =~ $DAILY_NOTE_REGEX ]]
+}
+
+# Prefix each note name with a stat field, sort numerically, strip the field.
+# $1 = stat format, $2 = sort flags
+sort_by_stat() {
+    local format="$1" flags="$2" name file value
+    while IFS= read -r name; do
+        file="$NOTES_DIR/$name.md"
+        [[ -f "$file" ]] || continue
+        value="$(stat -c "$format" "$file")"
+        # Birth time is 0 when the filesystem doesn't record it; use ctime
+        if [[ "$format" == "%W" && ( "$value" == "0" || -z "$value" ) ]]; then
+            value="$(stat -c %Z "$file")"
+        fi
+        echo "$value $name"
+    done | sort "$flags" | cut -d' ' -f2-
 }
 
 # Sort notes based on RECENT_LIST_SORT setting
-# Format: {field}_{direction} where direction is asc or desc
 sort_notes() {
     case "$RECENT_LIST_SORT" in
-        date_modified_desc|date_modified_asc)
-            local sort_flag="-rn"
-            [[ "$RECENT_LIST_SORT" == "date_modified_asc" ]] && sort_flag="-n"
-            while IFS= read -r name; do
-                local file="$NOTES_DIR/$name.md"
-                if [[ -f "$file" ]]; then
-                    echo "$(stat -c %Y "$file") $name"
-                fi
-            done | sort $sort_flag | cut -d' ' -f2-
-            ;;
-        date_created_desc|date_created_asc)
-            # Note: uses birth time if available, falls back to change time
-            local sort_flag="-rn"
-            [[ "$RECENT_LIST_SORT" == "date_created_asc" ]] && sort_flag="-n"
-            while IFS= read -r name; do
-                local file="$NOTES_DIR/$name.md"
-                if [[ -f "$file" ]]; then
-                    local ctime
-                    ctime=$(stat -c %W "$file" 2>/dev/null)
-                    # If birth time not available (0 or empty), use change time
-                    [[ "$ctime" == "0" || -z "$ctime" ]] && ctime=$(stat -c %Z "$file")
-                    echo "$ctime $name"
-                fi
-            done | sort $sort_flag | cut -d' ' -f2-
-            ;;
-        name_asc)
-            sort
-            ;;
-        name_desc)
-            sort -r
-            ;;
-        *)
-            # Default: newest first by modification time
-            while IFS= read -r name; do
-                local file="$NOTES_DIR/$name.md"
-                if [[ -f "$file" ]]; then
-                    echo "$(stat -c %Y "$file") $name"
-                fi
-            done | sort -rn | cut -d' ' -f2-
-            ;;
+        date_modified_asc)  sort_by_stat %Y -n ;;
+        date_created_desc)  sort_by_stat %W -rn ;;
+        date_created_asc)   sort_by_stat %W -n ;;
+        name_asc)           sort ;;
+        name_desc)          sort -r ;;
+        *)                  sort_by_stat %Y -rn ;;
     esac
 }
 
 get_recent_notes() {
-    local today tomorrow
+    local today tomorrow name
     today=$(get_today)
     tomorrow=$(get_tomorrow)
 
-    local all_notes
-    all_notes=$(find "$NOTES_DIR" -maxdepth 1 -name "*.md" -type f 2>/dev/null | \
-        sed 's|.*/||; s|\.md$||')
-
-    # Build exclusion pattern based on settings
-    local exclude_pattern=""
-    if [[ "$RECENT_LIST_INCLUDE_TODAY" != "true" ]]; then
-        exclude_pattern="^$today$\|^$tomorrow$\|^${today}_\|^${tomorrow}_"
-    fi
-
-    local filtered_notes
-    if [[ "$RECENT_LIST_INCLUDE_CUSTOM" == "true" ]]; then
-        # Include all notes
-        if [[ -n "$exclude_pattern" ]]; then
-            filtered_notes=$(echo "$all_notes" | grep -v "$exclude_pattern")
-        else
-            filtered_notes="$all_notes"
-        fi
-    else
-        # Only daily notes (matching date format)
-        filtered_notes=$(echo "$all_notes" | grep -E '^[0-9]{2}-[0-9]{2}-[0-9]{4}$')
-        if [[ -n "$exclude_pattern" ]]; then
-            filtered_notes=$(echo "$filtered_notes" | grep -v "^$today$\|^$tomorrow$")
-        fi
-    fi
-
-    # Sort and limit
-    echo "$filtered_notes" | sort_notes | head -n "$RECENT_LIST_COUNT"
+    find "$NOTES_DIR" -maxdepth 1 -name "*.md" -type f -printf '%f\n' 2>/dev/null |
+        sed 's|\.md$||' |
+        while IFS= read -r name; do
+            if [[ "$RECENT_LIST_INCLUDE_TODAY" != "true" ]]; then
+                case "$name" in
+                    "$today"|"$tomorrow"|"${today}_"*|"${tomorrow}_"*) continue ;;
+                esac
+            fi
+            if [[ "$RECENT_LIST_INCLUDE_CUSTOM" != "true" ]] && ! is_daily_note "$name"; then
+                continue
+            fi
+            echo "$name"
+        done |
+        sort_notes |
+        head -n "$RECENT_LIST_COUNT"
 }
 
+# Most recent daily note before today, looking back up to REWIND_MAX_DAYS
 get_last_note() {
-    local today
-    today=$(get_today)
-
-    find "$NOTES_DIR" -maxdepth 1 -name "*.md" -type f 2>/dev/null | \
-        sed 's|.*/||; s|\.md$||' | \
-        grep -E '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' | \
-        grep -v "^$today$" | \
-        sort -t- -k3 -k2 -k1 -r | \
-        head -n 1
+    local i date
+    for ((i = 1; i <= REWIND_MAX_DAYS; i++)); do
+        date=$(get_days_ago "$i")
+        if [[ -f "$(get_note_path "$date")" ]]; then
+            echo "$date"
+            return 0
+        fi
+    done
 }
 
 # --- Template system ---
 
-# Apply template for daily notes
-apply_daily_template() {
-    local date="$1"
-    local output_file="$2"
-    local template_file="$TEMPLATES_DIR/${DAILY_TEMPLATE}.md"
-
-    if [[ -f "$template_file" ]]; then
-        sed "s/{{DATE}}/$date/g" "$template_file" > "$output_file"
-    else
-        echo "Error: template not found: $template_file" >&2
-        exit 1
-    fi
+# Escape a string for use as the replacement in sed s/// (delimiter "/")
+sed_escape() {
+    printf '%s' "$1" | sed 's/[\/&]/\\&/g'
 }
 
-# Apply template for custom notes
-apply_custom_template() {
-    local title="$1"
-    local output_file="$2"
-    local template_file="$TEMPLATES_DIR/${CUSTOM_NOTES_TEMPLATE}.md"
+# Find a template by name: user templates first, then installed ones
+find_template() {
+    local name="$1"
+    local candidate
+    for candidate in "$USER_TEMPLATES_DIR/$name.md" "$TEMPLATES_DIR/$name.md"; do
+        if [[ -f "$candidate" ]]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    echo "Error: template '$name' not found in $USER_TEMPLATES_DIR or $TEMPLATES_DIR" >&2
+    notify "Template not found: $name"
+    exit 1
+}
 
-    if [[ -f "$template_file" ]]; then
-        sed "s/{{TITLE}}/$title/g" "$template_file" > "$output_file"
-    else
-        echo "Error: template not found: $template_file" >&2
-        exit 1
-    fi
+# Render a template into a file, replacing {{DATE}} and {{TITLE}}
+# $1 = template name, $2 = date, $3 = title, $4 = output file
+render_template() {
+    local template_file date title output_file
+    template_file="$(find_template "$1")"
+    date="$(sed_escape "$2")"
+    title="$(sed_escape "$3")"
+    output_file="$4"
+
+    sed -e "s/{{DATE}}/$date/g" -e "s/{{TITLE}}/$title/g" "$template_file" > "$output_file"
 }
 
 # --- Note operations ---
@@ -255,13 +271,12 @@ create_note() {
         return 0
     fi
 
-    apply_daily_template "$date" "$note_path"
+    render_template "$DAILY_TEMPLATE" "$date" "$date" "$note_path"
 }
 
 rewind_note() {
-    local today last_note
+    local today last_note today_path last_note_path
     today=$(get_today)
-    local today_path
     today_path=$(get_note_path "$today")
 
     # Check if today's note already exists
@@ -271,26 +286,24 @@ rewind_note() {
         return 0
     fi
 
-    # Find the last note
     last_note=$(get_last_note)
 
     if [[ -z "$last_note" ]]; then
-        notify "No previous notes found"
-        # Create a new note instead
+        notify "No previous daily note found"
         create_note "$today"
         echo "$today_path"
         return 0
     fi
 
-    local last_note_path
     last_note_path=$(get_note_path "$last_note")
 
-    # Check if custom rewind hook is defined
     if declare -f rewind_hook &>/dev/null; then
-        rewind_hook "$last_note_path" "$today_path"
+        # The hook's stdout must not leak into the returned path
+        rewind_hook "$last_note_path" "$today_path" >&2
     else
-        # Default rewind: copy and update date in header
-        sed "s/# Notes for $last_note/# Notes for $today/" "$last_note_path" > "$today_path"
+        # Default rewind: copy the note and update the date in its first line
+        sed "1s/$(sed_escape "$last_note")/$(sed_escape "$today")/" \
+            "$last_note_path" > "$today_path"
     fi
 
     echo "$today_path"
@@ -299,25 +312,27 @@ rewind_note() {
 open_note() {
     local note_path="$1"
 
-    # Ensure notes directory exists
     mkdir -p "$NOTES_DIR"
 
-    # Open in terminal with editor
+    # TERMINAL and EDITOR are unquoted on purpose so they can carry flags
+    # shellcheck disable=SC2086
     $TERMINAL $EDITOR "$note_path" &
 }
 
 browse_notes() {
     mkdir -p "$NOTES_DIR"
-    $TERMINAL sh -c "cd '$NOTES_DIR' && ls -1t *.md 2>/dev/null | sed 's|\.md$||' && exec \$SHELL" &
+    # shellcheck disable=SC2086,SC2016
+    $TERMINAL sh -c 'cd "$1" && ls -1t -- *.md 2>/dev/null | sed "s|\.md$||"; exec "${SHELL:-sh}"' \
+        sh "$NOTES_DIR" &
 }
 
 # --- Filename helpers ---
 
-# Normalize filename: lowercase, spaces to dashes, remove special chars
+# Normalize a note name: lowercase, spaces to dashes, keep only letters
+# (any script), digits and dashes
 normalize_filename() {
-    local input="$1"
-    # Convert to lowercase, replace spaces with dashes, remove special chars except alphanumeric and dash
-    echo "$input" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9\-]//g' | sed 's/--*/-/g' | sed 's/^-//; s/-$//'
+    local input="${1,,}"
+    echo "$input" | tr ' ' '-' | sed 's/[^[:alnum:]-]//g; s/--*/-/g; s/^-//; s/-$//'
 }
 
 # --- Custom note operations ---
@@ -328,16 +343,16 @@ create_custom_note() {
     note_name=$(prompt_input "Note name")
 
     # Exit if user cancelled
-    [[ -z "$note_name" ]] && return 1
+    [[ -z "$note_name" ]] && return 0
 
-    # Normalize the name
     local normalized
     normalized=$(normalize_filename "$note_name")
 
-    # Exit if name is empty after normalization
-    [[ -z "$normalized" ]] && notify "Invalid note name" && return 1
+    if [[ -z "$normalized" ]]; then
+        notify "Invalid note name"
+        return 1
+    fi
 
-    # Create filename based on CUSTOM_NOTES_DATE_PREFIX setting
     local today filename
     today=$(get_today)
     if [[ "$CUSTOM_NOTES_DATE_PREFIX" == "true" ]]; then
@@ -347,15 +362,13 @@ create_custom_note() {
     fi
     local note_path="$NOTES_DIR/$filename"
 
-    # Check if already exists
     if [[ -f "$note_path" ]]; then
         notify "Note already exists: $filename"
         open_note "$note_path"
         return 0
     fi
 
-    # Create note with custom template
-    apply_custom_template "$note_name" "$note_path"
+    render_template "$CUSTOM_NOTES_TEMPLATE" "$today" "$note_name" "$note_path"
 
     open_note "$note_path"
 }
@@ -383,25 +396,28 @@ ICON_NEW="✨"
 ICON_NOTE="📄"
 ICON_BROWSE="📂"
 
+MENU_TODAY="$ICON_TODAY Today"
+MENU_TOMORROW="$ICON_TOMORROW Tomorrow"
+MENU_REWIND="$ICON_REWIND Rewind"
+MENU_NEW="$ICON_NEW New Note"
+MENU_BROWSE="$ICON_BROWSE Browse Notes"
+
 build_menu() {
     local today tomorrow
     today=$(get_today)
     tomorrow=$(get_tomorrow)
 
-    # Fixed order: Today, Tomorrow, Rewind
-    echo "$ICON_TODAY Today ($today)"
-    echo "$ICON_TOMORROW Tomorrow ($tomorrow)"
-    echo "$ICON_REWIND Rewind"
+    echo "$MENU_TODAY ($today)"
+    echo "$MENU_TOMORROW ($tomorrow)"
+    echo "$MENU_REWIND"
 
-    # New Note option (if enabled)
     if [[ "$CUSTOM_NOTES_ENABLED" == "true" ]]; then
-        echo "$ICON_NEW New Note"
+        echo "$MENU_NEW"
     fi
 
-    # Recent notes (if enabled)
     if [[ "$RECENT_LIST_ENABLED" == "true" ]]; then
         local recent
-        recent=$(get_recent_notes)
+        recent=$(get_recent_notes) || true
         if [[ -n "$recent" ]]; then
             while IFS= read -r note; do
                 echo "$ICON_NOTE $note"
@@ -409,8 +425,18 @@ build_menu() {
         fi
     fi
 
-    # Browse option at the end
-    echo "$ICON_BROWSE Browse Notes"
+    echo "$MENU_BROWSE"
+}
+
+check_launcher() {
+    case "$MENU_LAUNCHER" in
+        wofi|rofi|dmenu|fzf) ;;
+        *)
+            echo "Unknown menu launcher: $MENU_LAUNCHER" >&2
+            echo "Supported: wofi, rofi, dmenu, fzf" >&2
+            exit 1
+            ;;
+    esac
 }
 
 show_menu() {
@@ -427,41 +453,29 @@ show_menu() {
         fzf)
             fzf --prompt="Notes> " --height=40%
             ;;
-        *)
-            echo "Unknown menu launcher: $MENU_LAUNCHER" >&2
-            echo "Supported: wofi, rofi, dmenu, fzf" >&2
-            exit 1
-            ;;
     esac
 }
 
 # Prompt user for text input
 prompt_input() {
     local prompt_text="$1"
+    local input
 
     case "$MENU_LAUNCHER" in
         wofi)
-            # Show placeholder hint for better UX
-            echo "[Type and press Enter]" | wofi --dmenu \
+            echo "" | wofi --dmenu \
                 --prompt "$prompt_text" \
                 --cache-file=/dev/null \
-                --lines 1 \
-                --allow-markup \
-                --insensitive
+                --lines 0
             ;;
         rofi)
-            echo "" | rofi -dmenu -p "$prompt_text" -lines 0
+            echo "" | rofi -dmenu -p "$prompt_text" -l 0
             ;;
         dmenu)
             echo "" | dmenu -p "$prompt_text"
             ;;
-        fzf)
-            # fzf requires special approach for input
-            read -p "$prompt_text: " input
-            echo "$input"
-            ;;
         *)
-            read -p "$prompt_text: " input
+            read -r -p "$prompt_text: " input
             echo "$input"
             ;;
     esac
@@ -472,7 +486,7 @@ handle_selection() {
     local note_path
 
     case "$selection" in
-        *"Today"*)
+        "$MENU_TODAY"*)
             local today
             today=$(get_today)
             note_path=$(get_note_path "$today")
@@ -480,7 +494,7 @@ handle_selection() {
             open_note "$note_path"
             ;;
 
-        *"Tomorrow"*)
+        "$MENU_TOMORROW"*)
             local tomorrow
             tomorrow=$(get_tomorrow)
             note_path=$(get_note_path "$tomorrow")
@@ -488,23 +502,22 @@ handle_selection() {
             open_note "$note_path"
             ;;
 
-        *"Rewind"*)
+        "$MENU_REWIND")
             note_path=$(rewind_note)
             open_note "$note_path"
             ;;
 
-        *"New Note"*)
+        "$MENU_NEW")
             create_custom_note
             ;;
 
-        *"Browse Notes"*)
+        "$MENU_BROWSE")
             browse_notes
             ;;
 
         *)
-            # Extract note name from "📄 note-name" (can be daily or custom)
-            local note_name
-            note_name=$(echo "$selection" | sed "s/^$ICON_NOTE //" | tr -d ' ')
+            # "📄 note-name" -> "note-name" (daily or custom note)
+            local note_name="${selection#"$ICON_NOTE "}"
             note_path="$NOTES_DIR/$note_name.md"
 
             if [[ -f "$note_path" ]]; then
@@ -523,21 +536,21 @@ handle_selection() {
 
 show_help() {
     cat << 'EOF'
-vsnm - A minimal, keyboard-driven note management system
+vsnm - A minimal, keyboard-driven note manager
 
 USAGE:
     vsnm [OPTIONS]
 
 OPTIONS:
-    --help      Show this help message
-    --config    Print config file location and exit
-    --version   Show version information
+    -h, --help     Show this help message
+    --config       Print config file location
+    -v, --version  Show version information
 
 CONFIGURATION:
     Config file: ~/.config/vsnm/config
-    Templates:   ~/.config/vsnm/templates/
+    Templates:   ~/.config/vsnm/templates/ (overrides the installed ones)
 
-    The config file will be created automatically on first run.
+    The config file is created on first run.
 
 KEYBINDING EXAMPLES:
     Hyprland:  bind = SUPER, N, exec, vsnm
@@ -545,7 +558,7 @@ KEYBINDING EXAMPLES:
     i3:        bindsym $mod+n exec --no-startup-id vsnm
 
 MORE INFO:
-    https://github.com/YOUR_USERNAME/vsnm
+    https://github.com/universal-abstraction/vsnm
 EOF
 }
 
@@ -554,7 +567,6 @@ EOF
 # ============================================================================
 
 main() {
-    # Parse command line arguments
     case "${1:-}" in
         --help|-h)
             show_help
@@ -575,23 +587,19 @@ main() {
             ;;
     esac
 
-    # Initialize config directory and load configuration
     init_config
     load_config
+    check_launcher
 
-    # Ensure notes directory exists
     mkdir -p "$NOTES_DIR"
 
-    # Build and show menu
+    # A cancelled menu exits non-zero; treat it as an empty selection.
     local selection
-    selection=$(build_menu | show_menu)
+    selection=$(build_menu | show_menu) || true
 
-    # Exit if nothing selected
     [[ -z "$selection" ]] && exit 0
 
-    # Handle the selection
     handle_selection "$selection"
 }
 
-# Run main function
 main "$@"
